@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Cheetah & Lion Object Detection 🐆🦁</title>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@latest"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@teachablemachine/image@0.8.4/dist/teachablemachine-image.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/paho-mqtt/1.0.1/mqttws31.min.js"></script>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      background-color: #fff9c4; /* สีเหลืองอ่อน */
+      margin: 0;
+      padding: 20px;
+      text-align: center;
+    }
+    h1 {
+      color: #f39c12; /* สีทอง */
+    }
+    h2 {
+      color: #e67e22;  /* สีส้ม */
+    }
+    button {
+      background-color: #f39c12; /* สีทอง */
+      color: white;
+      border: none;
+      padding: 10px 20px;
+      font-size: 1.1em;
+      cursor: pointer;
+      margin: 10px;
+    }
+    button:hover {
+      background-color: #e67e22; /* สีส้ม */
+    }
+    #status {
+      margin-top: 20px;
+      padding: 10px;
+      background-color: #ecf0f1;
+      font-size: 1em;
+      color: #34495e;
+      border-radius: 5px;
+    }
+    #webcam-container {
+      margin-top: 20px;
+    }
+  </style>
+</head>
+<body>
+  <h1>Cheetah & Lion Object Detection 🐆🦁</h1>
+  <h2>Real-Time Cheetah and Lion Detection 🌍🦓</h2>
+  
+  <button onclick="init('environment')">Start 🐆🦁 (Back Camera)</button>
+  <button onclick="init('user')">Start 🦁🐆 (Front Camera)</button>
+  <button onclick="stop()">Stop 🛑</button>
+
+  <div id="status">กำลังเตรียมพร้อม...</div>
+  <div id="webcam-container"></div>
+
+  <script type="text/javascript">
+    const URL = "https://teachablemachine.withgoogle.com/models/CennzuTZgr/";
+    const MQTT_TOPIC = "JEFFYSOBIG";
+
+    let model, webcam, labelContainer, maxPredictions;
+    let mqttClient;
+    let sending = false;
+    let paused = false;
+    let timeoutId;
+    let isRunning = false;
+
+    function updateStatus(message, type = "status") {
+      const statusDiv = document.getElementById("status");
+      statusDiv.innerText = message;
+      statusDiv.className = `status ${type}`;
+    }
+
+    function connectMQTT() {
+      return new Promise((resolve, reject) => {
+        try {
+          const clientId = "clientId-oHKE0fJ17E" + Math.floor(Math.random() * 10000);
+          mqttClient = new Paho.MQTT.Client("broker.hivemq.com", 8884, "/mqtt", clientId);
+
+          mqttClient.onConnectionLost = (responseObject) => {
+            console.error("MQTT lost:", responseObject.errorMessage);
+            updateStatus("MQTT lost. Reconnecting...", "error");
+            if (isRunning) {
+              setTimeout(() => connectMQTT().catch(() => {}), 5000);
+            }
+          };
+
+          mqttClient.connect({
+            useSSL: true,
+            timeout: 30,
+            keepAliveInterval: 60,
+            cleanSession: true,
+            onSuccess: () => {
+              console.log("MQTT connected");
+              updateStatus("MQTT เชื่อมต่อสำเร็จ", "success");
+              resolve();
+            },
+            onFailure: (e) => {
+              console.error("MQTT failed:", e.errorMessage);
+              updateStatus("MQTT ล้มเหลว: " + e.errorMessage, "error");
+              reject(e);
+            }
+          });
+        } catch (error) {
+          console.error("MQTT setup error:", error);
+          updateStatus("MQTT setup error: " + (error?.message || JSON.stringify(error)), "error");
+          reject(error);
+        }
+      });
+    }
+
+    async function init(facingMode) {
+      try {
+        isRunning = true;
+        updateStatus("กำลังเชื่อมต่อ MQTT...");
+        await connectMQTT();
+
+        updateStatus("กำลังโหลดโมเดล...");
+        const modelURL = URL + "model.json";
+        const metadataURL = URL + "metadata.json";
+        model = await tmImage.load(modelURL, metadataURL);
+        maxPredictions = model.getTotalClasses();
+        updateStatus("โหลดโมเดลสำเร็จ", "success");
+
+        updateStatus("กำลังเปิดกล้อง...");
+        webcam = new tmImage.Webcam(320, 240, false);
+        await webcam.setup({ facingMode: facingMode || "environment" });
+        await webcam.play();
+        
+        document.getElementById("webcam-container").appendChild(webcam.canvas);
+        updateStatus("กล้องเปิดสำเร็จ - กำลังตรวจจับ...", "success");
+
+        window.requestAnimationFrame(loop);
+
+      } catch (error) {
+        console.error("Init error:", error);
+        updateStatus("Error: " + (error?.message || JSON.stringify(error)), "error");
+        isRunning = false;
+      }
+    }
+
+    async function loop() {
+      if (!paused && isRunning && webcam) {
+        try {
+          webcam.update();
+          await predict();
+        } catch (error) {
+          updateStatus("Prediction error: " + (error?.message || JSON.stringify(error)), "error");
+        }
+      }
+      if (isRunning) {
+        setTimeout(() => window.requestAnimationFrame(loop), 100);
+      }
+    }
+
+    async function predict() {
+      const prediction = await model.predict(webcam.canvas);
+
+      for (let i = 0; i < maxPredictions; i++) {
+        const prob = prediction[i].probability;
+        const className = prediction[i].className;
+        if (prob >= 0.9 && !sending) {
+          sending = true;
+          paused = true;
+          updateStatus(`พบ ${className} 🦁🐆`);
+
+          if (mqttClient && mqttClient.isConnected()) {
+            const message = new Paho.MQTT.Message(className);
+            message.destinationName = MQTT_TOPIC;
+            mqttClient.send(message);
+            updateStatus(`ส่งแล้ว: ${className}`, "success");
+          } else {
+            updateStatus("MQTT ไม่ได้เชื่อมต่อ", "error");
+          }
+
+          setTimeout(() => {
+            sending = false;
+            paused = false;
+            updateStatus("กำลังตรวจจับ...", "success");
+          }, 1000);
+          break;
+        }
+      }
+    }
+
+    function stop() {
+      isRunning = false;
+      paused = true;
+      updateStatus("หยุดการตรวจจับ", "error");
+      if (webcam) {
+        webcam.stop();
+      }
+      mqttClient.disconnect();
+    }
+  </script>
+</body>
+</html>
