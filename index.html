@@ -77,7 +77,7 @@
     function connectMQTT() {
       return new Promise((resolve, reject) => {
         try {
-          const clientId = "clientId-oHKE0fJ17E" + Math.floor(Math.random() * 10000);
+          const clientId = "clientId-k1BVSCz7Jf" + Math.floor(Math.random() * 10000);
           mqttClient = new Paho.MQTT.Client("broker.hivemq.com", 8884, "/mqtt", clientId);
 
           mqttClient.onConnectionLost = (responseObject) => {
@@ -198,4 +198,5 @@
   </script>
 </body>
 </html>
+
 
